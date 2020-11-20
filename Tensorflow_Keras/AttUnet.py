@@ -4,8 +4,6 @@ Created on Wed Apr 22 17:01:09 2020
 
 @author: JEpark
 """
-
-
 from keras.layers import Conv2D, MaxPooling2D, UpSampling2D, Activation, Input, Dropout
 from keras.layers import core, add, multiply
 from keras.models import Model

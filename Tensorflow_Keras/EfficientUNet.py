@@ -19,11 +19,6 @@ def residual_block(blockInput, num_filters=16):
     return x
 
 def UEfficientNet(input_shape=(256, 256, 1),dropout_rate=0.5,weights=None):
-
-#     backbone = EfficientNetB4(weights='imagenet',
-#                             include_top=False,
-#                             input_shape=input_shape)
-
     backbone = EfficientNetB4(weights=weights,
                             include_top=False,
                             input_shape=input_shape)
