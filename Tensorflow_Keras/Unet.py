@@ -35,62 +35,6 @@ def deconv_block(x, skips, filters, kernel_size=(3,3), strides=(2,2), mode_norm=
     return x
 
 #####################################################################################################################################
-# Unet w/ Edge w/ multi-input w/ supervision (YS)
-def unet_edge_sv(img_shape, n_shapes, n_edges, depth = 4, features = 32, mode_norm='batch', data_format='channels_last'):
-    inputs = Input(img_shape)
-    x = inputs
-    # multi-inputs
-    avg = inputs
-    avgs = []
-    for i in range(depth):
-        avg = AveragePooling2D(pool_size=(2, 2))(avg)
-        avgs.append(avg)
-    ## encoder
-    skips = []
-    for i in range(depth):                
-        x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)
-        x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)
-        skips.append(x)
-        x = MaxPooling2D((2, 2), data_format=data_format)(x)
-        avg2 = conv_block(avgs[i], features, mode_norm=mode_norm, data_format=data_format)
-        x = concatenate([x, avg2])
-
-        features = features * 2
-        
-    x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)
-    x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)
-    
-    ## decoder
-    outs = []
-    # for shape
-    x1 = x
-    filters = features
-    up_size = depth * 2
-    for i in reversed(range(depth)):
-        filters = filters // 2
-        x1 = deconv_block(x1, skips[i], filters, mode_norm=mode_norm, data_format=data_format)
-    
-        out_shape = UpSampling2D(size=(up_size, up_size), name='before_out_shape_{}'.format(i))(x1)
-        outs.append(Conv2D(n_shapes, (3,3), activation='softmax', padding='same', name='out_shape_{}'.format(i))(out_shape))
-        up_size = up_size // 2
-    # for edge 
-    x2 = x
-    filters = features
-    up_size = depth * 2
-    for i in reversed(range(depth)):
-        filters = filters // 2
-        x2 = deconv_block(x2, skips[i], filters, mode_norm=mode_norm, data_format=data_format)
-    
-        out_edge = UpSampling2D(size=(up_size, up_size), name='before_out_edge_{}'.format(i))(x2)
-        outs.append(Conv2D(n_edges, (3,3), activation='softmax', padding='same', name='out_edge_{}'.format(i))(out_edge))
-        up_size = up_size // 2
-    
-    model = Model(inputs=inputs, outputs=outs)
-    
-    model.summary()
-    return model
-
-#####################################################################################################################################
 
 #U-Net
 def unet(img_shape, n_shapes, depth = 4, features = 32, mode_norm='batch', data_format='channels_last'):
@@ -279,62 +223,6 @@ def unet_sv_outSz(in_shape, out_shape, n_shapes, depth = 4, features = 32, mode_
         outs.append(Conv2D(n_shapes, 3, activation='softmax', padding='same')(conv_out))
         up_size = up_size // 2
                 
-    model = Model(inputs=inputs, outputs=outs)
-    
-    model.summary()
-    return model
-
-# Unet w/ Edge w/ supervision (YS)
-def unet_edge_sv_outSz(in_shape, out_shape, n_shapes, n_edges, depth = 4, filters = 32, mode_norm='batch', data_format='channels_last'):
-    inputs = Input(in_shape)
-    size = out_shape // int(in_shape[0])
-    print(size)
-    
-    x = inputs
-
-    avg = inputs
-    avgs = []
-    for i in range(depth):
-        avg = AveragePooling2D(pool_size=(2, 2))(avg)
-        avgs.append(avg)
-
-    skips = []
-    for i in range(depth):        
-        x = conv_block(x, filters=filters, mode_norm=mode_norm, data_format=data_format)
-        x = conv_block(x, filters=filters, mode_norm=mode_norm, data_format=data_format)
-        skips.append(x)
-        x = MaxPooling2D((2, 2), data_format=data_format)(x)
-        avg2 = conv_block(avgs[i], filters=filters, mode_norm=mode_norm, data_format=data_format)
-        x = concatenate([x, avg2])
-        
-        filters = filters * 2
-        
-    x = conv_block(x, filters=filters, mode_norm=mode_norm, data_format=data_format)
-    x = conv_block(x, filters=filters, mode_norm=mode_norm, data_format=data_format)
-
-    x1 = x
-    outs = []
-    up_size = depth * 2
-    for i in reversed(range(depth)):
-        filters = filters // 2
-        x1 = deconv_block(x1, skips[i], filters=filters, mode_norm=mode_norm, data_format=data_format)
-        
-        conv_out = UpSampling2D(size=(up_size, up_size))(x1)
-        conv_out = Conv2D(n_shapes, 3, activation='softmax', padding='same')(conv_out)
-        outs.append(conv_out)
-        up_size = up_size // 2
-        
-    x2 = x
-    up_size = depth * 2
-    for i in reversed(range(depth)):
-        filters = filters // 2
-        x2 = deconv_block(x2, skips[i], filters=filters, mode_norm=mode_norm, data_format=data_format)
-        
-        conv_out = UpSampling2D(size=(up_size, up_size))(x2)
-        conv_out = Conv2D(n_edges, 3, activation='softmax', padding='same')(conv_out)
-        outs.append(conv_out)
-        up_size = up_size // 2
-        
     model = Model(inputs=inputs, outputs=outs)
     
     model.summary()
