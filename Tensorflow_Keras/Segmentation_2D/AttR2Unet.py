@@ -4,11 +4,11 @@ Created on Wed Apr 22 17:04:00 2020
 
 @author: JEpark
 """
-from keras.layers import Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, Activation, Input
-from keras.layers import core, add, multiply
-from keras.models import Model
-from keras.layers.core import Lambda
-import keras.backend as K
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, UpSampling2D, BatchNormalization, Activation, Input
+from tensorflow.keras.layers import add, multiply
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers.core import Lambda
+import tensorflow.keras.backend as K
 
 def attention_up_and_concate(down_layer, layer, data_format='channels_last'):
     if data_format == 'channels_first':
