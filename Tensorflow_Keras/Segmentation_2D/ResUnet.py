@@ -20,13 +20,13 @@ def up_conv(conv2, conv1, filters, layer_activation='relu', padding='same'):
     return conc
     
     
-def ResUnet(img_shape, base_filter=32, layer_activation='relu', padding='same', n_classes=1):
+def ResUnet(shape, base_filter=32, layer_activation='relu', padding='same', num_class=1):
     if n_classes == 1:
         activation='sigmoid'
     else:
         activation='softmax'
         
-    inputs = Input((shape[0], shape[1], 1))
+    inputs = Input(shape)
     
     conv1, pool1 = double_conv(inputs, filters=base_filter, layer_activation=layer_activation, padding=padding)
     conv2, pool2 = double_conv(pool1, filters=base_filter*2, layer_activation=layer_activation, padding=padding)
@@ -42,7 +42,7 @@ def ResUnet(img_shape, base_filter=32, layer_activation='relu', padding='same', 
     conc8 = up_conv(conc7, conv2, base_filter*2, layer_activation=layer_activation, padding=padding)
     conc9 = up_conv(conc8, conv1, base_filter, layer_activation=layer_activation, padding=padding)
 
-    conv10 = Conv2D(n_classes, (1, 1), activation=activation)(conc9)
+    conv10 = Conv2D(num_class, (1, 1), activation=activation)(conc9)
 
     model = Model(inputs=[inputs], outputs=[conv10])
     return model

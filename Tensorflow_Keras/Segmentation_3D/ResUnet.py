@@ -1,91 +1,181 @@
 import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, concatenate, Conv3D, MaxPooling3D, Conv3DTranspose, AveragePooling3D, ZeroPadding3D
-from tensorflow.keras.optimizers import RMSprop, Adam, SGD
-from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger
-from tensorflow.keras.regularizers import l2
+def res_block_initial(x, num_filters, kernel_size, strides, name):
+    """Residual Unet block layer for first layer
+    In the residual unet the first residual block does not contain an
+    initial batch normalization and activation so we create this separate
+    block for it.
+    Args:
+        x: tensor, image or image activation
+        num_filters: list, contains the number of filters for each subblock
+        kernel_size: int, size of the convolutional kernel
+        strides: list, contains the stride for each subblock convolution
+        name: name of the layer
+    Returns:
+        x1: tensor, output from residual connection of x and x1
+    """
 
-def ResUnet_re(shape, base_filter=32, layer_activation='relu', padding='same', depth=4, num_classes=1):
-    if num_classes == 1:
-        activation='sigmoid'
-    else:
-        activation='softmax'
+    if len(num_filters) == 1:
+        num_filters = [num_filters[0], num_filters[0]]
+            
+    x1 = tf.keras.layers.Conv3D(filters=num_filters[0], 
+                                kernel_size=kernel_size, 
+                                strides=strides[0], 
+                                padding='same', 
+                                name=name+'_1')(x)
+    x1 = tf.keras.layers.BatchNormalization()(x1)
+    x1 = tf.keras.layers.Activation('relu')(x1)
+    x1 = tf.keras.layers.Conv3D(filters=num_filters[1], 
+                                kernel_size=kernel_size,
+                                strides=strides[1], 
+                                padding='same', 
+                                name=name+'_2')(x1)
+
+    x = tf.keras.layers.Conv3D(filters=num_filters[-1],
+                                kernel_size=1,
+                                strides=1,
+                                padding='same',
+                                name=name+'_shortcut')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+
+    x1 = tf.keras.layers.Add()([x, x1])
+    
+    return x1
+
+def res_block(x, num_filters, kernel_size, strides, name):
+    """Residual Unet block layer
+    Consists of batch norm and relu, folowed by conv, batch norm and relu and 
+    final convolution. The input is then put through 
+    Args:
+        x: tensor, image or image activation
+        num_filters: list, contains the number of filters for each subblock
+        kernel_size: int, size of the convolutional kernel
+        strides: list, contains the stride for each subblock convolution
+        name: name of the layer
+    Returns:
+        x1: tensor, output from residual connection of x and x1
+    """
+
+    if len(num_filters) == 1:
+        num_filters = [num_filters[0], num_filters[0]]
+
+    x1 = tf.keras.layers.BatchNormalization()(x)
+    x1 = tf.keras.layers.Activation('relu')(x1)
+    x1 = tf.keras.layers.Conv3D(filters=num_filters[0], 
+                                kernel_size=kernel_size, 
+                                strides=strides[0], 
+                                padding='same', 
+                                name=name+'_1')(x1)
+    x1 = tf.keras.layers.BatchNormalization()(x1)
+    x1 = tf.keras.layers.Activation('relu')(x1)
+    x1 = tf.keras.layers.Conv3D(filters=num_filters[1], 
+                                kernel_size=kernel_size,
+                                strides=strides[1], 
+                                padding='same', 
+                                name=name+'_2')(x1)
+
+    x = tf.keras.layers.Conv3D(filters=num_filters[-1],
+                                    kernel_size=1,
+                                    strides=strides[0],
+                                    padding='same',
+                                    name=name+'_shortcut')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+                                                            
+    x1 = tf.keras.layers.Add()([x, x1])
+
+    return x1
+
+
+def upsample(x, target_size):
+    """"Upsampling function, upsamples the feature map
+    Deep Residual Unet paper does not describe the upsampling function 
+    in detail. Original Unet uses a transpose convolution that downsamples 
+    the number of feature maps. In order to restrict the number of 
+    parameters here we use a bilinear resampling layer. This results in 
+    the concatentation layer concatenting feature maps with n and n/2 
+    features as opposed to n/2  and n/2 in the original unet.
+    Args:
+        x: tensor, feature map
+        target_size: size to resize feature map to
+    Returns:
+        x_resized: tensor, upsampled feature map
+    """
+
+    x_resized = tf.keras.layers.Lambda(lambda x: tf.image.resize(x, target_size))(x)
+
+    return x_resized
         
-    inputs = Input((shape[0], shape[1], shape[2], 1))
-    filters = base_filter
-    conv, conc, pool, up = [], [], [inputs], []
-    
-    for d in range(depth):
-        temp = Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(pool[-1])
-        conv.append(Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(temp))
-        conc.append(concatenate([pool[-1], conv[-1]], axis=4))
-        pool.append(MaxPooling3D(pool_size=(2, 2, 2))(conc[-1]))
-        filters *= 2
+def encoder(x, num_filters, kernel_size):
+    """Unet encoder
+    Args:
+        x: tensor, output from previous layer
+        num_filters: list, number of filters for each decoder layer
+        kernel_size: int, size of the convolutional kernel
+    Returns:
+        encoder_output: list, output from all encoder layers
+    """
 
-    conv.append(Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(pool[-1]))
-    conv.append(Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(conv[-1]))
-    conc.append(concatenate([pool[-1], conv[-1]], axis=4))
-    
-    for d in reversed(range(depth)):
-        filters /= 2
-        up.append(concatenate([Conv3DTranspose(filters, (2, 2, 2), strides=(2, 2, 2), padding='same')(conc[-1]), conv[d]], axis=-1))
-        temp = Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(up[-1])
-        conv.append(Conv3D(filters, (3, 3, 3), activation=layer_activation, padding=padding)(temp))
-        conc.append(concatenate([up[-1], conv[-1]], axis=4))
+    x = res_block_initial(x, [num_filters[0]], kernel_size, strides=[1,1], name='layer1')
 
-    outs = Conv3D(num_classes, (1, 1, 1), activation=activation)(conc[-1])
+    encoder_output = [x]
+    for i in range(1, len(num_filters)):
+        layer = 'encoder_layer' + str(i)
+        x = res_block(x, [num_filters[i]], kernel_size, strides=[2,1], name=layer)
+        encoder_output.append(x)
 
-    model = Model(inputs=[inputs], outputs=[outs])
-    return model
+    return encoder_output
 
-def ResUnet(shape, base_filter=32, layer_activation='relu', padding='same', activation='sigmoid'):
-    inputs = Input((shape[0], shape[1], shape[2], 1))
+def decoder(x, encoder_output, num_filters, kernel_size):
+    """Unet decoder
+    Args:
+        x: tensor, output from previous layer
+        encoder_output: list, output from all previous encoder layers
+        num_filters: list, number of filters for each decoder layer
+        kernel_size: int, size of the convolutional kernel
+    Returns:
+        x: tensor, output from last layer of decoder
+    """
 
-    conv1 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(inputs)
-    conv1 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv1)
-    conc1 = concatenate([pool1, conv2], axis=4)
-    pool1 = MaxPooling3D(pool_size=(2, 2, 2))(conc)
-    
-    conv2 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(pool1)
-    conv2 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv2)
-    conc2 = concatenate([pool1, conv2], axis=4)
-    pool2 = MaxPooling3D(pool_size=(2, 2, 2))(conc2)
+    for i in range(1, len(num_filters) + 1):
+        layer = 'decoder_layer' + str(i)
+        target_size = encoder_output[-i].shape[1:3]
+        x = upsample(x, target_size)
 
-    conv3 = Conv3D(base_filter*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(pool2)
-    conv3 = Conv3D(base_filter*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv3)
-    conc3 = concatenate([pool2, conv3], axis=4)
-    pool3 = MaxPooling3D(pool_size=(2, 2, 2))(conc3)
+        x = tf.keras.layers.Concatenate(axis=-1)([x, encoder_output[-i]])
+        x = res_block(x, [num_filters[-i]], kernel_size, strides=[1,1], name=layer)
 
-    conv4 = Conv3D(base_filter*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(pool3)
-    conv4 = Conv3D(base_filter*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv4)
-    conc4 = concatenate([pool3, conv4], axis=4)
-    pool4 = MaxPooling3D(pool_size=(2, 2, 2))(conc4)
+    return x
 
-    conv5 = Conv3D(base_filter*2*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(pool4)
-    conv5 = Conv3D(base_filter*2*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv5)
-    conc5 = concatenate([pool4, conv5], axis=4)
 
-    up6 = concatenate([Conv3DTranspose(base_filter*2*2*2, (2, 2, 2), strides=(2, 2, 2), padding='same')(conc5), conv4], axis=4)
-    conv6 = Conv3D(base_filter*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(up6)
-    conv6 = Conv3D(base_filter*2*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv6)
-    conc6 = concatenate([up6, conv6], axis=4)
+def res_unet(shape, num_filters=[32,64,128,256], kernel_size=3, num_class=1):
+    """Residual Unet
+    Function that generates a residual unet
+    Args:
+        input_size: int, dimension of the input image
+        num_layers: int, number of layers in the encoder half, excludes bridge
+        num_filters: list, number of filters for each encoder layer
+        kernel_size: size of the kernel, applied to all convolutions
+        num_channels: int, number of channels for the input image
+        num_classes: int, number of output classes for the output
+    Returns:
+        model: tensorflow keras model for residual unet architecture
+    """
 
-    up7 = concatenate([Conv3DTranspose(base_filter*2*2, (2, 2, 2), strides=(2, 2, 2), padding=padding)(conc6), conv3], axis=4)
-    conv7 = Conv3D(base_filter*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(up7)
-    conv7 = Conv3D(base_filter*2*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv7)
-    conc7 = concatenate([up7, conv7], axis=4)
+    x = tf.keras.Input(shape)
 
-    up8 = concatenate([Conv3DTranspose(base_filter*2, (2, 2, 2), strides=(2, 2, 2), padding=padding)(conc7), conv2], axis=4)
-    conv8 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(up8)
-    conv8 = Conv3D(base_filter*2, (3, 3, 3), activation=layer_activation, padding=padding)(conv8)
-    conc8 = concatenate([up8, conv8], axis=4)
+    encoder_output = encoder(x, num_filters, kernel_size)
 
-    up9 = concatenate([Conv3DTranspose(base_filter, (2, 2, 2), strides=(2, 2, 2), padding=padding)(conc8), conv1], axis=4)
-    conv9 = Conv3D(base_filter, (3, 3, 3), activation=layer_activation, padding=padding)(up9)
-    conv9 = Conv3D(base_filter, (3, 3, 3), activation=layer_activation, padding=padding)(conv9)
-    conc9 = concatenate([up9, conv9], axis=4)
+    # bridge layer, number of filters is double that of the last encoder layer
+    bridge = res_block(encoder_output[-1], [num_filters[-1]*2], kernel_size, 
+                        strides=[2,1], name='bridge')
 
-    conv10 = Conv3D(1, (1, 1, 1), activation=activation)(conc9)
+    decoder_output = decoder(bridge, encoder_output, num_filters, kernel_size)
 
-    model = Model(inputs=[inputs], outputs=[conv10])
+    output = tf.keras.layers.Conv3D(num_class, 
+                                    kernel_size, 
+                                    strides=1, 
+                                    padding='same', 
+                                    name='output')(decoder_output)
+
+    model = tf.keras.Model(x, output)
+
     return model

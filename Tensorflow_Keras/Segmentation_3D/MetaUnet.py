@@ -3,17 +3,19 @@ from tensorflow.keras import Input, Model, layers, utils
 
 
 def standard_unit(input_tensor, stage, nb_filter, kernel_size=3):
-    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+stage+'_1', 
+    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), 
+                      activation=None, name='conv'+stage+'_1', 
                       kernel_initializer = 'he_normal', padding='same')(input_tensor)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
-    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+stage+'_2',
+    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size),
+                      activation=None, name='conv'+stage+'_2',
                       kernel_initializer = 'he_normal', padding='same')(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     return x
 
-def Unet3D(shape, num_class=1, filters=32, activation='sigmoid'):    
+def unet(shape, num_class=1, filters=32, activation='sigmoid'):    
     nb_filter = [filters*2**i for i in range(5)]
     bn_axis = -1
     img_input = Input(shape=shape, name='main_input')
@@ -44,7 +46,7 @@ def Unet3D(shape, num_class=1, filters=32, activation='sigmoid'):
     unet_output = layers.Conv3D(num_class, (1, 1, 1), activation=activation, name='output', 
                                 kernel_initializer = 'he_normal', padding='same')(conv1_5)
     
-    return Model(inputs=img_input, outputs=unet_output)
+    return Model(inputs=img_input, outputs=unet_output[...,shape[3]//2,:]) # tf.reduce_sum(unet_output,axis=3)
 
 # with multiple branches
 def Unet3D_2b(shape, num_class=1, filters=32, activation='sigmoid'):    

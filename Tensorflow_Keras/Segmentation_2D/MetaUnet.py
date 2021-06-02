@@ -6,10 +6,9 @@ Created on Wed Apr 22 17:04:00 2020
 """
 import tensorflow as tf
 
-from tensorflow.keras.layers import Conv2D, AveragePooling2D, MaxPooling2D, UpSampling2D, BatchNormalization, Activation, Input, Conv2DTranspose
-from tensorflow.keras.layers import concatenate, LayerNormalization
+from tensorflow.keras.layers import Conv2D, AveragePooling2D, MaxPooling2D, UpSampling2D, Activation, Input, Conv2DTranspose
+from tensorflow.keras.layers import concatenate, BatchNormalization, LayerNormalization
 from tensorflow.keras.models import Model
-#     from keras_layer_normalization import LayerNormalization
 
 
 def conv_block(x, filters, kernel_size=(3,3), padding='same', mode_norm='batch', data_format='channels_last'):
@@ -38,7 +37,7 @@ def return_activation(n_shapes):
         return 'softmax'
     
 #U-Net
-def unet(shape, num_class, depth = 4, features = 32, mode_norm='batch', data_format='channels_last'):
+def unet(shape, num_class, depth = 4, features = 32, mode_norm='layer', data_format='channels_last'):
     inputs = Input(shape)
     x = inputs    
     
@@ -50,6 +49,7 @@ def unet(shape, num_class, depth = 4, features = 32, mode_norm='batch', data_for
         x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)
         skips.append(x)
         x = MaxPooling2D((2, 2), data_format=data_format)(x)
+#         x = AveragePooling2D((2, 2), data_format=data_format)(x)
         features = features * 2
         
     x = conv_block(x, features, mode_norm=mode_norm, data_format=data_format)

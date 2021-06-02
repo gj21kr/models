@@ -236,6 +236,11 @@ def Deeplabv3(img_shape=(512, 512, 1), num_classes=1,
 
     img_input = Input(shape=img_shape)
 
+    if num_classes == 1 :
+        activation ='sigmoid'
+    else:
+        activation ='softmax'
+        
     if backbone == 'xception':
         if OS == 8:
             entry_block3_stride = 1
