@@ -1,112 +1,86 @@
 import tensorflow as tf
 from tensorflow.keras import Input, Model, layers, utils
 
+from .utils import *
 
-def standard_unit(input_tensor, stage, nb_filter, kernel_size=3):
-    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+stage+'_1', 
-                      kernel_initializer = 'he_normal', padding='same')(input_tensor)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+stage+'_2',
-                      kernel_initializer = 'he_normal', padding='same')(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    return x
-
-def Unet3D(shape, num_class=1, filters=32, activation='sigmoid', pooling='max'):    
+def Unet3D(shape, num_class=1, filters=32, model_depth=3, activation='sigmoid', pooling='max', layer_act='relu', bn_axis=-1):    
     nb_filter = [filters*2**i for i in range(5)]
-    bn_axis = -1
     img_input = Input(shape=shape, name='main_input')
 
-    conv1_1 = standard_unit(img_input, stage='11', nb_filter=nb_filter[0])
-    if pooling=='max':
-        pool1 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool1')(conv1_1)
-    elif pooling=='avg':
-        pool1 = layers.AveragePooling3D((2, 2, 2), strides=(2, 2, 2), name='pool1')(conv1_1)
-    else:
-        ppool1 = conv1_1
-        
-    conv2_1 = standard_unit(pool1, stage='21', nb_filter=nb_filter[1])
-    if pooling=='max':
-        pool2 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool2')(conv2_1)
-    elif pooling=='avg':
-        pool2 = layers.AveragePooling3D((2, 2, 2), strides=(2, 2, 2), name='pool2')(conv2_1)
-    else:
-        ppool2 = conv2_1
+    conv1_1 = standard_unit(img_input, stage=model_depth-3, nb_filter=nb_filter[model_depth-3], layer_act=layer_act)
+    pool1 = pooling_unit(conv1_1, stage=model_depth-3, pooling=pooling)
 
-    conv3_1 = standard_unit(pool2, stage='31', nb_filter=nb_filter[2])
-    if pooling=='max':
-        pool3 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool3')(conv3_1)
-    elif pooling=='avg':
-        pool3 = layers.AveragePooling3D((2, 2, 2), strides=(2, 2, 2), name='pool3')(conv3_1)
-    else:
-        ppool3 = conv3_1
+    conv2_1 = standard_unit(pool1, stage=model_depth-2, nb_filter=nb_filter[model_depth-2], layer_act=layer_act)
+    pool2 = pooling_unit(conv2_1, stage=model_depth-2, pooling=pooling)
 
-    conv4_1 = standard_unit(pool3, stage='41', nb_filter=nb_filter[3])
+    conv3_1 = standard_unit(pool2, stage=model_depth-1, nb_filter=nb_filter[model_depth-1], layer_act=layer_act)
+    pool3 = pooling_unit(conv3_1, stage=model_depth-1, pooling=pooling)
 
-    up3_3 = layers.Conv3DTranspose(nb_filter[2], (2, 2, 2), strides=(2, 2, 2), name='up33', padding='same')(conv4_1)
-    conv3_3 = layers.concatenate([up3_3, conv3_1], name='merge33', axis=bn_axis)
-    conv3_3 = standard_unit(conv3_3, stage='33', nb_filter=nb_filter[2])
+    conv4_1 = standard_unit(pool3, stage=model_depth, nb_filter=nb_filter[model_depth], layer_act=layer_act)
 
-    up2_4 = layers.Conv3DTranspose(nb_filter[1], (2, 2, 2), strides=(2, 2, 2), name='up24', padding='same')(conv3_3)
-    conv2_4 = layers.concatenate([up2_4, conv2_1], name='merge24', axis=bn_axis)
-    conv2_4 = standard_unit(conv2_4, stage='24', nb_filter=nb_filter[1])
+    _, output = decoder([conv1_1, conv2_1, conv3_1, conv4_1], nb_filter, decoder_depth=model_depth, decoder_num=0, layer_act=layer_act, activation=activation)
 
-    up1_5 = layers.Conv3DTranspose(nb_filter[0], (2, 2, 2), strides=(2, 2, 2), name='up15', padding='same')(conv2_4)
-    conv1_5 = layers.concatenate([up1_5, conv1_1], name='merge15', axis=bn_axis)
-    conv1_5 = standard_unit(conv1_5, stage='15', nb_filter=nb_filter[0])
+    return Model(inputs=img_input, outputs=output)
 
-    unet_output = layers.Conv3D(num_class, (1, 1, 1), activation=activation, name='output', 
-                                kernel_initializer = 'he_normal', padding='same')(conv1_5)
-    
-    return Model(inputs=img_input, outputs=unet_output)
 
-# with multiple branches
-def Unet3D_2b(shape, num_class=1, filters=32, activation='sigmoid'):    
+# https://arxiv.org/pdf/1703.07523.pdf
+def Unet3D_MultiOutputs(shape, num_class=1, filters=32, first=4, end=3, model_depth=3, activation='sigmoid', layer_act='relu', pooling='max'):    
     nb_filter = [filters*2**i for i in range(5)]
-    bn_axis = -1
     img_input = Input(shape=shape, name='main_input')
+    conv1_1 = standard_unit(img_input, stage=model_depth-3, nb_filter=nb_filter[model_depth-3], layer_act=layer_act)
+    pool1 = pooling_unit(conv1_1, stage=model_depth-3, pooling=pooling)
 
-    conv1_1 = standard_unit(img_input, stage='11', nb_filter=nb_filter[0])
-    pool1 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool1')(conv1_1)
+    conv2_1 = standard_unit(pool1, stage=model_depth-2, nb_filter=nb_filter[model_depth-2], layer_act=layer_act)
+    pool2 = pooling_unit(conv2_1, stage=model_depth-2, pooling=pooling)
 
-    conv2_1 = standard_unit(pool1, stage='21', nb_filter=nb_filter[1])
-    pool2 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool2')(conv2_1)
+    conv3_1 = standard_unit(pool2, stage=model_depth-1, nb_filter=nb_filter[model_depth-1], layer_act=layer_act)
+    pool3 = pooling_unit(conv3_1, stage=model_depth-1, pooling=pooling)
 
-    conv3_1 = standard_unit(pool2, stage='31', nb_filter=nb_filter[2])
-    pool3 = layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool3')(conv3_1)
-
-    conv4_1 = standard_unit(pool3, stage='41', nb_filter=nb_filter[3])
+    conv4_1 = standard_unit(pool3, stage=model_depth, nb_filter=nb_filter[model_depth], layer_act=layer_act)
     
-    ################################################################################################################# branch 1
-    up3_3 = layers.Conv3DTranspose(nb_filter[2], (2, 2, 2), strides=(2, 2, 2), name='up33', padding='same')(conv4_1)
-    conv3_3 = layers.concatenate([up3_3, conv3_1], name='merge33', axis=bn_axis)
-    conv3_3 = standard_unit(conv3_3, stage='33', nb_filter=nb_filter[2])
-
-    up2_4 = layers.Conv3DTranspose(nb_filter[1], (2, 2, 2), strides=(2, 2, 2), name='up24', padding='same')(conv3_3)
-    conv2_4 = layers.concatenate([up2_4, conv2_1], name='merge24', axis=bn_axis)
-    conv2_4 = standard_unit(conv2_4, stage='24', nb_filter=nb_filter[1])
-
-    up1_5 = layers.Conv3DTranspose(nb_filter[0], (2, 2, 2), strides=(2, 2, 2), name='up15', padding='same')(conv2_4)
-    conv1_5 = layers.concatenate([up1_5, conv1_1], name='merge15', axis=bn_axis)
-    conv1_5 = standard_unit(conv1_5, stage='15', nb_filter=nb_filter[0])
+    outputs, last_out = decoder([conv1_1, conv2_1, conv3_1, conv4_1], nb_filter, decoder_depth=model_depth, decoder_num=0, layer_act=layer_act, activation=activation)
     
-    unet_output = layers.Conv3D(num_class, (1, 1, 1), activation=activation, name='output', 
-                                kernel_initializer = 'he_normal', padding='same')(conv1_5)
-    ################################################################################################################# branch 2
-    up3_3b = layers.Conv3DTranspose(nb_filter[2], (2, 2, 2), strides=(2, 2, 2), name='up33b', padding='same')(conv4_1)
-    conv3_3b = layers.concatenate([up3_3b, conv3_1], name='merge33', axis=bn_axis)
-    conv3_3b = standard_unit(conv3_3b, stage='33', nb_filter=nb_filter[2])
-
-    up2_4b = layers.Conv3DTranspose(nb_filter[1], (2, 2, 2), strides=(2, 2, 2), name='up24b', padding='same')(conv3_3b)
-    conv2_4b = layers.concatenate([up2_4b, conv2_1], name='merge24', axis=bn_axis)
-    conv2_4b = standard_unit(conv2_4b, stage='24', nb_filter=nb_filter[1])
-
-    up1_5b = layers.Conv3DTranspose(nb_filter[0], (2, 2, 2), strides=(2, 2, 2), name='up15b', padding='same')(conv2_4b)
-    conv1_5b = layers.concatenate([up1_5b, conv1_1], name='merge15', axis=bn_axis)
-    conv1_5b = standard_unit(conv1_5b, stage='15', nb_filter=nb_filter[0])
+    conv2_1 = layers.UpSampling3D(size=2**1, name='out_2')(conv2_1)
+    conv3_1 = layers.UpSampling3D(size=2**2, name='out_3')(conv3_1)
+    conv4_1 = layers.UpSampling3D(size=2**3, name='out_4')(conv4_1)
     
-    unet_outputb = layers.Conv3D(num_class, (1, 1, 1), activation=activation, name='outputb', 
-                                kernel_initializer = 'he_normal', padding='same')(conv1_5b)
+    conv2_4 = layers.UpSampling3D(size=2**1, name='out_6')(outputs[1])
+    conv1_5 = layers.UpSampling3D(size=2**2, name='out_7')(outputs[0])
     
-    return Model(inputs=img_input, outputs=[unet_output,unet_outputb])
+    if first==1 and end==1:
+        return Model(inputs=img_input, outputs=[conv1_1, last_out])
+    elif first==2 and end==2:
+        return Model(inputs=img_input, outputs=[conv1_1, conv2_1, conv2_4, last_out])    
+    elif first==3 and end==3:
+        return Model(inputs=img_input, outputs=[conv1_1, conv2_1, conv3_1, conv1_5, conv2_4, last_out])
+    elif first==4 and end==3:
+        return Model(inputs=img_input, outputs=[conv1_1, conv2_1, conv3_1, conv4_1, conv1_5, conv2_4, last_out])
+    elif first==0 and end==1:
+        return Model(inputs=img_input, outputs=[last_out])
+    elif first==0 and end==2:
+        return Model(inputs=img_input, outputs=[conv2_4, last_out])
+    elif first==0 and end==3:
+        return Model(inputs=img_input, outputs=[conv3_3, conv2_4, last_out])
+
+    
+def Unet3D_MultiDecoders(shape, num_decoders=2, num_class=1, filters=32, model_depth=3, decoder_num=2, activation='sigmoid', layer_act='relu', pooling='max'):    
+    nb_filter = [filters*2**i for i in range(5)]
+    img_input = Input(shape=shape, name='main_input')
+    conv1_1 = standard_unit(img_input, stage=model_depth-3, nb_filter=nb_filter[model_depth-3], layer_act=layer_act)
+    pool1 = pooling_unit(conv1_1, stage=model_depth-3, pooling=pooling)
+
+    conv2_1 = standard_unit(pool1, stage=model_depth-2, nb_filter=nb_filter[model_depth-2], layer_act=layer_act)
+    pool2 = pooling_unit(conv2_1, stage=model_depth-2, pooling=pooling)
+
+    conv3_1 = standard_unit(pool2, stage=model_depth-1, nb_filter=nb_filter[model_depth-1], layer_act=layer_act)
+    pool3 = pooling_unit(conv3_1, stage=model_depth-1, pooling=pooling)
+
+    conv4_1 = standard_unit(pool3, stage=model_depth, nb_filter=nb_filter[model_depth], layer_act=layer_act)
+
+    unet_outputs = []
+    for decoder_num in range(num_decoders):
+        _, last_out = decoder([conv1_1, conv2_1, conv3_1, conv4_1], nb_filter, decoder_depth=model_depth, decoder_num=decoder_num, layer_act=layer_act, activation=activation)
+        unet_outputs.append(last_out)
+
+    return Model(inputs=img_input, outputs=unet_outputs)
+

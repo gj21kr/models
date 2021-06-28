@@ -1,111 +1,106 @@
-from skimage.segmentation import find_boundaries
+import tensorflow as tf
+from tensorflow.keras import Input, Model, layers, utils
 
-def make_weight_map_2d(masks, w0 = 10, sigma = 5):
-    """
-    Generate the weight maps as specified in the UNet paper
-    for a set of binary masks.
-    
-    Parameters
-    ----------
-    masks: array-like
-        A 3D array of shape (n_masks, image_height, image_width),
-        where each slice of the matrix along the 0th axis represents one binary mask.
+def standard_unit(input_tensor, stage, nb_filter, layer_act, kernel_size=3):
+    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+str(stage)+'_1', kernel_initializer = 'he_normal', padding='same')(input_tensor)
+    x = layers.BatchNormalization()(x)
+    if layer_act == 'relu':
+        x = layers.ReLU()(x)
+    elif layer_act == 'leaky_relu':
+        x = layers.LeakyReLU()(x)
+    x = layers.Conv3D(nb_filter, (kernel_size, kernel_size, kernel_size), activation=None, name='conv'+str(stage)+'_2', kernel_initializer = 'he_normal', padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    if layer_act == 'relu':
+        x = layers.ReLU()(x)
+    elif layer_act == 'leaky_relu':
+        x = layers.LeakyReLU()(x)
+    return x
 
-    Returns
-    -------
-    array-like
-        A 2D array of shape (image_height, image_width)
-        
-    source: https://jaidevd.github.io/posts/weighted-loss-functions-for-instance-segmentation/    
-    """
-    nrows, ncols = masks.shape[1:]
-    masks = (masks > 0).astype(int)
-    distMap = np.zeros((nrows * ncols, masks.shape[0]))
-    X1, Y1 = np.meshgrid(np.arange(nrows), np.arange(ncols))
-    X1, Y1 = np.c_[X1.ravel(), Y1.ravel()].T
-    for i, mask in enumerate(masks):
-        # find the boundary of each mask,
-        # compute the distance of each pixel from this boundary
-        bounds = find_boundaries(mask, mode='inner')
-        X2, Y2 = np.nonzero(bounds)
-        xSum = (X2.reshape(-1, 1) - X1.reshape(1, -1)) ** 2
-        ySum = (Y2.reshape(-1, 1) - Y1.reshape(1, -1)) ** 2
-        distMap[:, i] = np.sqrt(xSum + ySum).min(axis=0)
-    ix = np.arange(distMap.shape[0])
-    if distMap.shape[1] == 1:
-        d1 = distMap.ravel()
-        border_loss_map = w0 * np.exp((-1 * (d1) ** 2) / (2 * (sigma ** 2)))
+def pooling_unit(conv1_1, stage, pooling='max', kernel_size=2, stride=2):
+    if pooling=='max':
+        return layers.MaxPooling3D((2, 2, 2), strides=(2, 2, 2), name='pool'+str(stage))(conv1_1)
+    elif pooling=='avg':
+        return layers.AveragePooling3D((2, 2, 2), strides=(2, 2, 2), name='pool'+str(stage))(conv1_1)
     else:
-        if distMap.shape[1] == 2:
-            d1_ix, d2_ix = np.argpartition(distMap, 1, axis=1)[:, :2].T
-        else:
-            d1_ix, d2_ix = np.argpartition(distMap, 2, axis=1)[:, :2].T
-        d1 = distMap[ix, d1_ix]
-        d2 = distMap[ix, d2_ix]
-        border_loss_map = w0 * np.exp((-1 * (d1 + d2) ** 2) / (2 * (sigma ** 2)))
-    xBLoss = np.zeros((nrows, ncols))
-    xBLoss[X1, Y1] = border_loss_map
-    # class weight map
-    loss = np.zeros((nrows, ncols))
-    w_1 = 1 - masks.sum() / loss.size
-    w_0 = 1 - w_1
-    loss[masks.sum(0) == 1] = w_1
-    loss[masks.sum(0) == 0] = w_0
-    ZZ = xBLoss + loss
-    return ZZ
-
-def make_weight_map_3d(masks, w0 = 10, sigma = 5):
-    """
-    Generate the weight maps as specified in the UNet paper
-    for a set of binary masks.
+        return conv1_1
     
-    Parameters
-    ----------
-    masks: array-like
-        A 3D array of shape (n_masks, image_height, image_width, image_frames),
-        where each slice of the matrix along the 0th axis represents one binary mask.
+def decoder(convs, nb_filter, decoder_depth=3, decoder_num=0, layer_act='relu', activation='sigmoid', bn_axis=-1):  
+    outputs = []
+    start_layer = convs[-1]
+    for idx in range(decoder_depth):
+        up = layers.UpSampling3D(name='up'+str(idx)+str(decoder_num))(start_layer)
+        conv = layers.concatenate([up, convs[-(idx+2)]], name='merge'+str(idx)+str(decoder_num), axis=bn_axis)
+        conv = standard_unit(conv, stage=str(idx)+str(decoder_num), nb_filter=nb_filter[2], layer_act=layer_act)
+        start_layer = conv
+        outputs.append(conv)
 
-    Returns
-    -------
-    array-like
-        A 2D array of shape (image_height, image_width, image_frames)
+    conv_last = layers.Conv3D(1, (1, 1, 1), activation=activation, name='output_'+str(decoder_num), kernel_initializer='he_normal', padding='same')(start_layer)
+
+    return outputs, conv_last
+    
         
-    source: https://jaidevd.github.io/posts/weighted-loss-functions-for-instance-segmentation/    
-    """
-    nrows, ncols, nframes = masks.shape[1:]
-    masks = (masks > 0).astype(int)
-    distMap = np.zeros((nrows * ncols * nframes, masks.shape[0]))
-    X1, Y1, Z1 = np.meshgrid(np.arange(nrows), np.arange(ncols), np.arange(nframes))
-    X1, Y1, Z1 = np.c_[X1.ravel(), Y1.ravel(), Z1.ravel()].T
-    for i, mask in enumerate(masks):
-        # find the boundary of each mask,
-        # compute the distance of each pixel from this boundary
-        bounds = find_boundaries(mask, mode='inner')
-        X2, Y2, Z2 = np.nonzero(bounds)
-        xSum = (X2.reshape(-1, 1) - X1.reshape(1, -1)) ** 2
-        ySum = (Y2.reshape(-1, 1) - Y1.reshape(1, -1)) ** 2
-        zSum = (Z2.reshape(-1, 1) - Z1.reshape(1, -1)) ** 2
-        distMap[:, i] = np.sqrt(xSum + ySum +zSum).min(axis=0)
-    ix = np.arange(distMap.shape[0])
-    if distMap.shape[1] == 1:
-        d1 = distMap.ravel()
-        border_loss_map = w0 * np.exp((-1 * (d1) ** 2) / (2 * (sigma ** 2)))
-    else:
-        if distMap.shape[1] == 2:
-            d1_ix, d2_ix = np.argpartition(distMap, 1, axis=1)[:, :2].T
-        else:
-            d1_ix, d2_ix = np.argpartition(distMap, 2, axis=1)[:, :2].T
-        d1 = distMap[ix, d1_ix]
-        d2 = distMap[ix, d2_ix]
-        border_loss_map = w0 * np.exp((-1 * (d1 + d2) ** 2) / (2 * (sigma ** 2)))
-        
-    xBLoss = np.zeros((nrows, ncols, nframes))
-    xBLoss[X1, Y1, Z1] = border_loss_map
-    # class weight map
-    loss = np.zeros((nrows, ncols, nframes))
-    w_1 = 1 - masks.sum() / loss.size
-    w_0 = 1 - w_1
-    loss[masks.sum(0) == 1] = w_1
-    loss[masks.sum(0) == 0] = w_0
-    ZZ = xBLoss + loss
-    return ZZ
+def decoder_att_321(conv1_1, conv2_1, conv3_1, conv4_1, decoder_num=0, layer_act='relu', bn_axis=-1):    
+    up3_3 = layers.UpSampling3D(name='up33_'+str(decoder_num))(conv4_1)
+    #up3_3 = layers.Conv3DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up33', padding='same')(conv4_2)
+    att3_3 = layers.Attention()([up3_3, conv3_1])
+    conv3_3 = layers.concatenate([up3_3, att3_3], name='merge33_'+decoder_num, axis=bn_axis)
+    conv3_3 = standard_unit(conv3_3, stage='33_'+str(decoder_num), nb_filter=nb_filter[2], layer_act=layer_act)
+
+    up2_4 = layers.UpSampling3D(name='up24_'+str(decoder_num))(conv3_3)
+    #up2_4 = layers.Conv3DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up24', padding='same')(conv3_3)
+    att2_4 = layers.Attention()([up2_4, conv2_1])
+    conv2_4 = layers.concatenate([up2_4, att2_4], name='merge24_'+str(decoder_num), axis=bn_axis)
+    conv2_4 = standard_unit(conv2_4, stage='24_'+str(decoder_num), nb_filter=nb_filter[1], layer_act=layer_act)
+
+    up1_5 = layers.UpSampling3D(name='up15_'+str(decoder_num))(conv2_4)
+    #up1_5 = layers.Conv3DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up15', padding='same')(conv2_4)
+    att1_5 = layers.Attention()([up1_5, conv1_1])
+    conv1_5 = layers.concatenate([up1_5, att1_5], name='merge15_'+str(decoder_num), axis=bn_axis)
+    conv1_5 = standard_unit(conv1_5, stage='15_'+str(decoder_num), nb_filter=nb_filter[0], layer_act=layer_act)
+
+    unet_output = layers.Conv3D(1, (1, 1, 1), activation=activation, name='output_'+str(decoder_num), kernel_initializer = 'he_normal', padding='same')(conv1_5)
+    return unet_output
+
+def decoder_att_21(conv1_1, conv2_1, conv3_1, conv4_1, decoder_num=0, layer_act='relu', bn_axis=-1):    
+    up3_3 = layers.UpSampling3D(name='up33_'+str(decoder_num))(conv4_1)
+    #up3_3 = layers.Conv3DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up33', padding='same')(conv4_2)
+    conv3_3 = layers.concatenate([up3_3, conv3_1], name='merge33_'+str(decoder_num), axis=bn_axis)
+    conv3_3 = standard_unit(conv3_3, stage='33_'+str(decoder_num), nb_filter=nb_filter[2], layer_act=layer_act)
+
+    up2_4 = layers.UpSampling3D(name='up24_'+decoder_num)(conv3_3)
+    #up2_4 = layers.Conv3DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up24', padding='same')(conv3_3)
+    att2_4 = layers.Attention()([up2_4, conv2_1])
+    conv2_4 = layers.concatenate([up2_4, att2_4], name='merge24_'+str(decoder_num), axis=bn_axis)
+    conv2_4 = standard_unit(conv2_4, stage='24_'+str(decoder_num), nb_filter=nb_filter[1], layer_act=layer_act)
+
+    up1_5 = layers.UpSampling3D(name='up15_'+decoder_num)(conv2_4)
+    #up1_5 = layers.Conv3DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up15', padding='same')(conv2_4)
+    att1_5 = layers.Attention()([up1_5, conv1_1])
+    conv1_5 = layers.concatenate([up1_5, att1_5], name='merge15_'+str(decoder_num), axis=bn_axis)
+    conv1_5 = standard_unit(conv1_5, stage='15_'+str(decoder_num), nb_filter=nb_filter[0], layer_act=layer_act)
+
+    unet_output = layers.Conv3D(1, (1, 1, 1), activation=activation, name='output_'+str(decoder_num), kernel_initializer = 'he_normal', padding='same')(conv1_5)
+    return unet_output
+
+
+def decoder_att_32(conv1_1, conv2_1, conv3_1, conv4_1, decoder_num=0, layer_act='relu', bn_axis=-1):    
+    up3_3 = layers.UpSampling3D(name='up33_'+str(decoder_num))(conv4_1)
+    #up3_3 = layers.Conv3DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up33', padding='same')(conv4_2)
+    att3_3 = layers.Attention()([up3_3, conv3_1])
+    conv3_3 = layers.concatenate([up3_3, att3_3], name='merge33_'+str(decoder_num), axis=bn_axis)
+    conv3_3 = standard_unit(conv3_3, stage='33_'+str(decoder_num), nb_filter=nb_filter[2], layer_act=layer_act)
+
+    up2_4 = layers.UpSampling3D(name='up24_'+str(decoder_num))(conv3_3)
+    #up2_4 = layers.Conv3DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up24', padding='same')(conv3_3)
+    att2_4 = layers.Attention()([up2_4, conv2_1])
+    conv2_4 = layers.concatenate([up2_4, att2_4], name='merge24_'+str(decoder_num), axis=bn_axis)
+    conv2_4 = standard_unit(conv2_4, stage='24_'+str(decoder_num), nb_filter=nb_filter[1], layer_act=layer_act)
+
+    up1_5 = layers.UpSampling3D(name='up15_'+str(decoder_num))(conv2_4)
+    #up1_5 = layers.Conv3DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up15', padding='same')(conv2_4)
+    conv1_5 = layers.concatenate([up1_5, conv1_1], name='merge15_'+str(decoder_num), axis=bn_axis)
+    conv1_5 = standard_unit(conv1_5, stage='15_'+str(decoder_num), nb_filter=nb_filter[0], layer_act=layer_act)
+
+    unet_output = layers.Conv3D(1, (1, 1, 1), activation=activation, name='output_'+str(decoder_num), kernel_initializer = 'he_normal', padding='same')(conv1_5)
+    return unet_output
+
