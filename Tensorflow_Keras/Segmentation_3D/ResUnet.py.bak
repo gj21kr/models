@@ -27,7 +27,7 @@ def ResUnet(input_size=[256,256,256], num_classes=1):
         ## Conv 3
         x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Conv3D(n_filter, 1, padding="same")(x)
+        x = Conv3D(n_filter, 1 padding="same")(x)
 
         ## Shortcut
         s  = Conv3D(n_filter, 1, padding="same")(x_init)
