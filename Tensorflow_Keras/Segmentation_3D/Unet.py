@@ -31,7 +31,7 @@ def up_unit(conv4_1, conv3_1, stage, nb_filter, bn_axis=-1, layer_act='relu'):
     conv = standard_unit(conv, stage='up_last_'+str(stage), nb_filter=nb_filter, layer_act=layer_act)
     return conv
     
-def Unet3D(shape, num_class=1, filters=32, model_depth=3, activation='sigmoid', pooling='max', layer_act='relu', bn_axis=-1):    
+def Unet3D(shape, num_classes=1, filters=32, model_depth=3, activation='sigmoid', pooling='max', layer_act='relu', bn_axis=-1):    
     nb_filter = [filters*2**i for i in range(5)]
     img_input = Input(shape=shape, name='main_input')
 
@@ -50,7 +50,7 @@ def Unet3D(shape, num_class=1, filters=32, model_depth=3, activation='sigmoid', 
     conv2_2 = up_unit(conv3_2, conv2_1, stage=model_depth-2, nb_filter=nb_filter[model_depth-2], layer_act=layer_act)                             
     conv1_2 = up_unit(conv2_2, conv1_1, stage=model_depth-3, nb_filter=nb_filter[model_depth-3], layer_act=layer_act)
 
-    output = layers.Conv3D(num_class, (1, 1, 1), activation=activation, name='output', kernel_initializer='he_normal', padding='same')(conv1_2)
+    output = layers.Conv3D(num_classes, (1, 1, 1), activation=activation, name='output', kernel_initializer='he_normal', padding='same')(conv1_2)
 
     return Model(inputs=img_input, outputs=output)
 
