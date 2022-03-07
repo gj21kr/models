@@ -9,10 +9,9 @@ import tensorflow as tf
 from tensorflow.keras.layers import *
 from tensorflow.keras.models import Model
 
-def ResUnet(input_size=[256,256,256], num_classes=1, activation='sigmoid'):
+def ResUnet(input_size=[256,256,256], num_classes=1):
     input_size = input_size
     num_classes = num_classes
-    activation = activation
 
     def conv_block(x, n_filter):
         x_init = x
@@ -28,7 +27,7 @@ def ResUnet(input_size=[256,256,256], num_classes=1, activation='sigmoid'):
         ## Conv 3
         x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Conv3D(n_filter, 1, padding="same")(x)
+        x = Conv3D(n_filter, 1 padding="same")(x)
 
         ## Shortcut
         s  = Conv3D(n_filter, 1, padding="same")(x_init)
@@ -87,7 +86,7 @@ def ResUnet(input_size=[256,256,256], num_classes=1, activation='sigmoid'):
     ## output
     outputs = Conv3D(num_classes, (1, 1, 1), padding="same")(d4)
     outputs = BatchNormalization()(outputs)
-    outputs = Activation(activation)(outputs)
+    outputs = Activation("sigmoid")(outputs)
 
     ## Model
     model = Model(inputs, outputs)

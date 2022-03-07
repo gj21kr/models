@@ -1,185 +1,130 @@
+import sys
+import time
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
 
-def get_conv_transform(in_channels, out_channels, mode):
-    """
-    :param in_channels: int
-    :param out_channels: int
-    :param mode: string in ['up, 'down', 'same']
-        'up' - ConvTranspose3d with output 2*D, 2*W, 2*H
-        'down' - Conv3d with output D/2, W/2, H/2
-        'same' - Conv3d with output D, W, H
-        where D, W, H - shape of the input
-    :return:
-    """
-    if mode == 'up':
-        return nn.ConvTranspose3d(in_channels=in_channels,
-                                  out_channels=out_channels,
-                                  kernel_size=2,
-                                  stride=2,
-                                  padding=0)
-    elif mode == 'down':
-        return nn.Conv3d(in_channels=in_channels,
-                         out_channels=out_channels,
-                         kernel_size=3,
-                         stride=2,
-                         padding=1)
-    elif mode == 'same':
-        return nn.Conv3d(in_channels=in_channels,
-                         out_channels=out_channels,
-                         kernel_size=1,
-                         stride=1)
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, k_size=3, stride=1, padding=1):
+        super(ConvBlock, self).__init__()
+        self.conv3d = nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=k_size,
+                                stride=stride, padding=padding)
+        self.batch_norm = nn.BatchNorm3d(num_features=out_channels)
+
+    def forward(self, x):
+        x = self.batch_norm(self.conv3d(x))
+        # x = self.conv3d(x)
+        x = F.elu(x)
+        return x
 
 
-class GlobalAggregationBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, ck, cv, query_transform, dropout=0.5):
+class EncoderBlock(nn.Module):
+    def __init__(self, in_channels, model_depth=4, pool_size=2):
+        super(EncoderBlock, self).__init__()
+        self.root_feat_maps = 16
+        self.num_conv_blocks = 2
+        # self.module_list = nn.ModuleList()
+        self.module_dict = nn.ModuleDict()
+        for depth in range(model_depth):
+            feat_map_channels = 2 ** (depth + 1) * self.root_feat_maps
+            for i in range(self.num_conv_blocks):
+                # print("depth {}, conv {}".format(depth, i))
+                if depth == 0:
+                    # print(in_channels, feat_map_channels)
+                    self.conv_block = ConvBlock(in_channels=in_channels, out_channels=feat_map_channels)
+                    self.module_dict["conv_{}_{}".format(depth, i)] = self.conv_block
+                    in_channels, feat_map_channels = feat_map_channels, feat_map_channels * 2
+                else:
+                    # print(in_channels, feat_map_channels)
+                    self.conv_block = ConvBlock(in_channels=in_channels, out_channels=feat_map_channels)
+                    self.module_dict["conv_{}_{}".format(depth, i)] = self.conv_block
+                    in_channels, feat_map_channels = feat_map_channels, feat_map_channels * 2
+            if depth == model_depth - 1:
+                break
+            else:
+                self.pooling = nn.MaxPool3d(kernel_size=pool_size, stride=2, padding=0)
+                self.module_dict["max_pooling_{}".format(depth)] = self.pooling
+
+    def forward(self, x):
+        down_sampling_features = []
+        for k, op in self.module_dict.items():
+            if k.startswith("conv"):
+                x = op(x)
+                if k.endswith("1"):
+                    down_sampling_features.append(x)
+            elif k.startswith("max_pooling"):
+                x = op(x)
+        return x, down_sampling_features
+
+
+class ConvTranspose(nn.Module):
+    def __init__(self, in_channels, out_channels, k_size=3, stride=2, padding=1, output_padding=1):
+        super(ConvTranspose, self).__init__()
+        self.conv3d_transpose = nn.ConvTranspose3d(in_channels=in_channels,
+                                                   out_channels=out_channels,
+                                                   kernel_size=k_size,
+                                                   stride=stride,
+                                                   padding=padding,
+                                                   output_padding=output_padding)
+
+    def forward(self, x):
+        return self.conv3d_transpose(x)
+
+
+class DecoderBlock(nn.Module):
+    def __init__(self, out_channels, model_depth=4):
+        super(DecoderBlock, self).__init__()
+        self.num_conv_blocks = 2
+        self.num_feat_maps = 16
+        # user nn.ModuleDict() to store ops
+        self.module_dict = nn.ModuleDict()
+
+        for depth in range(model_depth - 2, -1, -1):
+            # print(depth)
+            feat_map_channels = 2 ** (depth + 1) * self.num_feat_maps
+            # print(feat_map_channels * 4)
+            self.deconv = ConvTranspose(in_channels=feat_map_channels * 4, out_channels=feat_map_channels * 4)
+            self.module_dict["deconv_{}".format(depth)] = self.deconv
+            for i in range(self.num_conv_blocks):
+                if i == 0:
+                    self.conv = ConvBlock(in_channels=feat_map_channels * 6, out_channels=feat_map_channels * 2)
+                    self.module_dict["conv_{}_{}".format(depth, i)] = self.conv
+                else:
+                    self.conv = ConvBlock(in_channels=feat_map_channels * 2, out_channels=feat_map_channels * 2)
+                    self.module_dict["conv_{}_{}".format(depth, i)] = self.conv
+            if depth == 0:
+                self.final_conv = ConvBlock(in_channels=feat_map_channels * 2, out_channels=out_channels)
+                self.module_dict["final_conv"] = self.final_conv
+
+    def forward(self, x, down_sampling_features):
         """
-        :param in_channels: int
-            input channels
-        :param out_channels: int
-            number of channels to output
-        :param ck: int
-            channels of keys
-        :param cv: int
-            channels of values
-        :param query_transform: string in ['up', 'down', 'same']
-        or torch.nn.Module
-            if string utils.get_conv_transform is used.
-            Parameter might be a torch module that handles tenzors
-            with shape of (Batch, Channels, Depth, Height, Width)
-            and outputs tensor (Batch, ck, NewDepth, NewHeight, NewWidth .
+        :param x: inputs
+        :param down_sampling_features: feature maps from encoder path
+        :return: output
         """
-        super(GlobalAggregationBlock, self).__init__()
-        self.ck = ck
-        self.cv = cv
-        self.softmax = nn.Softmax(-1)
-        self.conv_1_ck = nn.Conv3d(in_channels, ck, 1)
-        self.conv_1_cv = nn.Conv3d(in_channels, cv, 1)
-        if type(query_transform) is str:
-            self.query_transform = get_conv_transform(in_channels, ck, query_transform)
+        for k, op in self.module_dict.items():
+            if k.startswith("deconv"):
+                x = op(x)
+                x = torch.cat((down_sampling_features[int(k[-1])], x), dim=1)
+            elif k.startswith("conv"):
+                x = op(x)
+            else:
+                x = op(x)
+        return x
+
+class UnetModel(nn.Module):
+
+    def __init__(self, in_channels, out_channels, model_depth=4, final_activation="sigmoid"):
+        super(UnetModel, self).__init__()
+        self.encoder = EncoderBlock(in_channels=in_channels, model_depth=model_depth)
+        self.decoder = DecoderBlock(out_channels=out_channels, model_depth=model_depth)
+        if final_activation == "sigmoid":
+            self.sigmoid = nn.Sigmoid()
         else:
-            self.query_transform = query_transform
-        self.conv_1_co = nn.Conv3d(cv, out_channels, 1)
-        self.dropout = nn.Dropout(dropout)
+            self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
-        """
-        :param x: torch tensor (Batch, Channels, Depth, Height, Width)
-        :return: 5d torch tensor
-        """
-        queries = self.query_transform(x)
-        batch, cq, dq, hq, wq = queries.shape
-
-        queries = queries.flatten(start_dim=2, end_dim=-1)
-        keys = self.conv_1_ck(x).flatten(start_dim=2, end_dim=-1)
-        values = self.conv_1_cv(x).flatten(start_dim=2, end_dim=-1)
-
-        queries = queries.transpose(2, 1)
-
-        attention = torch.matmul(queries, keys) / (self.ck ** 0.5)
-        attention = self.softmax(attention)
-        attention = self.dropout(attention)
-        values = values.transpose(2, 1)
-        output = torch.matmul(attention, values)
-        output = self.conv_1_co(output.view(batch, self.cv, dq, hq, wq))
-        return output
-
-
-class InputBlock(nn.Module):
-    def __init__(self, in_channels):
-        super(InputBlock, self).__init__()
-        self.batch_norm1 = nn.BatchNorm3d(in_channels)
-        self.batch_norm2 = nn.BatchNorm3d(in_channels)
-        self.relu = nn.ReLU6()
-        self.conv1 = nn.Conv3d(in_channels, in_channels, 3, padding=1)
-        self.conv2 = nn.Conv3d(in_channels, in_channels, 3, padding=1)
-
-    def forward(self, x):
-        out = self.batch_norm1(x)
-        out = self.relu(out)
-        out = self.conv1(out)
-        out = self.batch_norm2(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        x = x + out
-        return x
-
-
-class DownSamplingBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(DownSamplingBlock, self).__init__()
-        self.batch_norm1 = nn.BatchNorm3d(in_channels)
-        self.batch_norm2 = nn.BatchNorm3d(out_channels)
-        self.relu = nn.ReLU6()
-        self.residual_conv = nn.Conv3d(in_channels, out_channels, 1, 2)
-        self.conv1 = get_conv_transform(in_channels, out_channels, 'down')
-        self.conv2 = nn.Conv3d(out_channels, out_channels, 3, 1, 1)
-
-    def forward(self, x):
-        residual = self.residual_conv(x)
-        x = self.batch_norm1(x)
-        x = self.relu(x)
-        x = self.conv1(x)
-        x = self.batch_norm2(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = x + residual
-        return x
-
-
-class BottomBlock(nn.Module):
-    def __init__(self, in_channels, ck, cv, dropout=0.5):
-        super(BottomBlock, self).__init__()
-        self.agg_block = GlobalAggregationBlock(in_channels, in_channels, ck, cv, 'same', dropout=dropout)
-
-    def forward(self, x):
-        x = self.agg_block(x)
-        return x
-
-
-class UpSamplingBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, ck, cv, dropout=0.5):
-        super(UpSamplingBlock, self).__init__()
-        self.agg_block = GlobalAggregationBlock(in_channels, out_channels, ck, cv, 'up', dropout=dropout)
-        self.residual_deconv = get_conv_transform(in_channels, out_channels, 'up')
-
-    def forward(self, x):
-        residual = self.residual_deconv(x)
-        x = self.agg_block(x)
-        x = x + residual
-        return x
-
-
-class Unet3D(nn.Module):
-    def __init__(self, in_channels, out_channels, base_filters = 32): #, dropout=0.5
-        super(Unet3D, self).__init__()
-        self.input_block = InputBlock(in_channels)
-        self.conv_input = nn.Conv3d(in_channels, base_filters, 1)
-        self.down_sample1 = DownSamplingBlock(base_filters, base_filters*2)
-        self.down_sample2 = DownSamplingBlock(base_filters*2, base_filters*4)
-        self.bottom = BottomBlock(base_filters*4, base_filters*4, base_filters*4)#, dropout=dropout)
-        self.up_sample1 = UpSamplingBlock(base_filters*4, base_filters*2, base_filters*2, base_filters*4)
-        self.up_sample2 = UpSamplingBlock(base_filters*2, base_filters, base_filters, base_filters)
-        self.output_block = InputBlock(base_filters)
-#         self.dropout = nn.Dropout(dropout)
-        self.conv_output = nn.Conv3d(base_filters, out_channels, 1)
-#         self.dropout_rate = dropout
-        
-    def forward(self, x) -> torch.tensor:
-        x = x.contiguous()
-        x = self.input_block(x)
-        x1 = self.conv_input(x)
-        x2 = self.down_sample1(x1)
-        x = self.down_sample2(x2)
-        x = self.bottom(x)
-        x = self.up_sample1(x)
-        x = x + x2
-        x = self.up_sample2(x)
-        x = x + x1
-        x = self.output_block(x)
-#         if self.dropout_rate > 0:
-#             x = self.dropout(x)
-        x = self.conv_output(x)
-        x = torch.sigmoid(x)
+        x, downsampling_features = self.encoder(x)
+        x = self.decoder(x, downsampling_features)
+        x = self.sigmoid(x)
         return x
